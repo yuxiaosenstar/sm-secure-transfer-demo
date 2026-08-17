@@ -8,8 +8,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 
-import * as C from '../web/shared/crypto.js'
-import { selfCheck, createWorkerHandlers } from '../web/worker-core.js'
+import * as C from '../web/secure/crypto.js'
+import { selfCheck, createWorkerHandlers } from '../web/secure/worker-core.js'
 
 /** 以数组收集 post 消息,模拟 worker 的 self.postMessage 宿主 */
 function makeHarness() {

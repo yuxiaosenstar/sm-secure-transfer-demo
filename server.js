@@ -12,7 +12,7 @@ import crypto from 'node:crypto'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
-import * as shared from './web/shared/crypto.js'
+import * as shared from './web/secure/crypto.js'
 import * as store from './src/store.js'
 import * as sessions from './src/sessions.js'
 import * as native from './src/crypto-native.js'
@@ -310,7 +310,7 @@ function createApp() {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const port = Number(process.env.PORT) || 3900
   createApp().listen(port, () => {
-    console.log(`SM 加密传输服务已启动: http://localhost:${port}(${isProd ? '生产,服务 dist/' : '开发,Vite middleware'})`)
+    console.log(`SM 加密传输服务已启动: http://localhost:${port} (${isProd ? '生产,服务 dist/' : '开发,Vite middleware'})`)
     console.log(`数据目录: ${store.DATA_DIR}`)
     console.log(`服务端 SM3/SM4 快路径: ${native.HAS_NATIVE ? 'Node 原生 crypto' : 'sm-crypto 纯 JS'}`)
   })

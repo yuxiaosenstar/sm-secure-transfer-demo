@@ -16,7 +16,7 @@ import { randomBytes } from 'node:crypto'
 // 保证顺序:store.js 顶层按此 env 计算数据目录)。
 process.env.SM_DATA_DIR = mkdtempSync(join(tmpdir(), 'sm-e2e-'))
 
-const C = await import('../web/shared/crypto.js')
+const C = await import('../web/secure/crypto.js')
 const store = await import('../src/store.js')
 const { createApp } = await import('../server.js')
 

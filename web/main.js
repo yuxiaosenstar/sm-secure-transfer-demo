@@ -2,11 +2,9 @@
  * 主线程:Vue 组件(页面逻辑)。
  *
  * 职责边界(拆分后):main.js 只保留 UI 状态与事件委托;上传/下载的传输编排
- * (密钥协商、分块调度、重试对账、Merkle 校验、写盘)全部在独立的 manager
- * 模块中,经回调与本组件通信:
- *  - upload-manager.js / download-manager.js:传输编排
- *  - worker-client.js / worker.js / worker-core.js:Worker 加解密
- *  - http.js / scheduler.js / keystore.js:HTTP、调度器、密钥存储
+ * (密钥协商、分块调度、重试对账、Merkle 校验、写盘)全部封装在
+ * web/secure/ 请求加密库中,经 createSecureClient() 门面与回调与本组件通信
+ * (详见 secure/index.js 的库边界注释)。
  *
  * 通信方式:组件创建任务对象先赋值到响应式 data,再把读到的代理传给 manager;
  * manager 只写代理的展示字段即触发模板更新。组件自有状态经回调注入:
@@ -19,12 +17,7 @@
  * window.__smApp.upload / pauseUpload() / resumeUpload() 原样保留。
  */
 import { createApp, markRaw } from 'vue'
-import { api } from './http.js'
-import { formatBytes, formatTime, shortHex } from './format.js'
-import { WorkerClient } from './worker-client.js'
-import { UploadManager } from './upload-manager.js'
-import { DownloadManager } from './download-manager.js'
-import { keyStore } from './keystore.js'
+import { createSecureClient, formatBytes, formatTime, shortHex } from './secure/index.js'
 
 createApp({
   data() {
@@ -42,9 +35,8 @@ createApp({
       stage: 0,           // 协议条推进到的阶段(0..4)
       notice: null,       // 页面内联通知 { type: 'error'|'info', text }
       noticeTimer: null,
-      // markRaw 包住 manager:防内部 AbortController/Set/Map/scheduler 被代理包裹
-      uploadMgr: null,
-      downloadMgr: null,
+      // markRaw 包住库门面:防内部 AbortController/Set/Map/scheduler 被代理包裹
+      client: null,
     }
   },
   computed: {
@@ -52,21 +44,18 @@ createApp({
   },
   async mounted() {
     window.__smApp = this // 调试钩子:供 CDP/控制台直接访问组件实例
-    // manager 必须在第一个 await 前同步建好,否则 mounted 期间 drop 会产生未处理 rejection
-    const worker = new WorkerClient()
-    this.uploadMgr = markRaw(new UploadManager(worker, {
+    // 库门面必须在第一个 await 前同步建好(内部同步创建 Worker),否则 mounted 期间
+    // drop 会产生未处理 rejection
+    this.client = markRaw(createSecureClient({
       onSession: (p) => Object.assign(this, typeof p === 'function' ? p(this) : p),
       onFilesChanged: () => this.refreshFiles(),
-      getPubkey: () => this.pubkey,
-    }))
-    this.downloadMgr = markRaw(new DownloadManager(worker, {
-      onSession: (p) => Object.assign(this, typeof p === 'function' ? p(this) : p),
       // 保留数秒让用户看到结果,随后恢复按钮
       onDownloadEnd: (fileId) => setTimeout(() => { delete this.downloads[fileId] }, 8000),
+      getPubkey: () => this.pubkey,
     }))
     await this.refreshFiles()
     try {
-      const { publicKey, fingerprint } = await api('/api/pubkey')
+      const { publicKey, fingerprint } = await this.client.fetchPubkey()
       this.pubkey = publicKey
       this.fingerprint = fingerprint
       this.stage = Math.max(this.stage, 1) // SM2 封装就绪
@@ -130,15 +119,15 @@ createApp({
       this.verified = 0
       this.totalChunks = 0
       this.rootHex = ''
-      // 先赋值让 Vue 惰性生成响应式代理,再读一次把同一代理传给 manager
-      await this.uploadMgr.start(file, this.upload)
+      // 先赋值让 Vue 惰性生成响应式代理,再读一次把同一代理传给库门面
+      await this.client.startUpload(file, this.upload)
     },
-    pauseUpload() { this.uploadMgr.pause() },
-    resumeUpload() { this.uploadMgr.resume() },
+    pauseUpload() { this.client.pauseUpload() },
+    resumeUpload() { this.client.resumeUpload() },
     cancelUpload() {
       const u = this.upload
       if (!u) return
-      this.uploadMgr.cancel()
+      this.client.cancelUpload()
       u.phase = 'cancelled'
       u.phaseText = '已取消'
       u.running = false
@@ -149,34 +138,29 @@ createApp({
     },
 
     /* ---------- 下载 ---------- */
-    hasKey(id) { return !!keyStore.get(id) },
+    hasKey(id) { return this.client.hasKey(id) },
     busy(f) { return !!this.downloads[f.id] },
 
     async download(f) {
-      const rec = keyStore.get(f.id)
+      const rec = this.client.getKey(f.id)
       if (!rec) {
         this.notify('此浏览器没有该文件的解密密钥。密钥只保存在上传时的那台浏览器(刷新后仍可解),换设备或清除站点数据后将无法解密。')
         return
       }
       const dl = { pct: 0, phaseText: '准备中…', phase: 'init' }
       this.downloads[f.id] = dl
-      // 先赋值让 Vue 惰性生成响应式代理,再读一次把同一代理传给 manager
-      await this.downloadMgr.download(f, rec, this.downloads[f.id])
+      // 先赋值让 Vue 惰性生成响应式代理,再读一次把同一代理传给库门面
+      await this.client.download(f, rec, this.downloads[f.id])
     },
 
     /* ---------- 文件管理 ---------- */
     async refreshFiles() {
-      try {
-        const { files } = await api('/api/files')
-        this.files = files
-      } catch (e) {
-        this.files = []
-      }
+      this.files = await this.client.listFiles()
     },
     async remove(f) {
       if (!confirm(`删除「${f.name}」?删除后不可恢复。`)) return
-      await api(`/api/files/${f.id}`, { method: 'DELETE' })
-      keyStore.remove(f.id)
+      await this.client.removeFile(f.id)
+      this.client.removeKey(f.id)
       await this.refreshFiles()
     },
     async copyPubkey() {

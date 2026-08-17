@@ -21,7 +21,7 @@ import { formatBytes, formatSpeed, formatTimeShort } from './format.js'
 import { ChunkScheduler, NonRetryable } from './scheduler.js'
 import { WorkerClient } from './worker-client.js'
 import { keyStore } from './keystore.js'
-import * as SM from './shared/crypto.js'
+import * as SM from './crypto.js'
 
 const CHUNK = SM.CHUNK_SIZE
 const MAX_CELLS = 400 // 分块矩阵最多显示的格数

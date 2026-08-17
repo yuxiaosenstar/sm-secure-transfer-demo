@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto'
 import { sm2 } from 'sm-crypto'
 
-import * as C from '../web/shared/crypto.js'
+import * as C from '../web/secure/crypto.js'
 
 const SM3_ABC = '66c7f0f462eeedd9d1f2d46bdc10e4e24167c4875cf2f7a2297da02b8f4ba8e0'
 

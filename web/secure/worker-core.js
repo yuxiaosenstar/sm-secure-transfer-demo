@@ -15,7 +15,7 @@
  *   out  {t:'merkle-root-done', id, rootHex}
  *   out  {t:'error', id, message}                   任一任务失败
  */
-import * as SM from './shared/crypto.js'
+import * as SM from './crypto.js'
 
 /** 启动自检:SM3 公开测试向量,校验库加载与双端字节语义 */
 export function selfCheck() {

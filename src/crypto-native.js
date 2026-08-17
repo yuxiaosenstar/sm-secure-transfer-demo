@@ -6,7 +6,7 @@
  * 不支持原生时自动回退 shared/crypto.js 纯 JS 实现。
  */
 import crypto from 'node:crypto'
-import * as shared from '../web/shared/crypto.js'
+import * as shared from '../web/secure/crypto.js'
 
 const HAS_NATIVE = crypto.getCiphers().includes('sm4-cbc') && crypto.getHashes().includes('sm3')
 

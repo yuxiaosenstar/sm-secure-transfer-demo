@@ -50,17 +50,20 @@ npm run smoke          # 真实浏览器(headless Chrome + CDP)全流程冒烟,�
 ```
 index.html                Vite 入口:Vue 3 单页(内联模板/样式),拖拽上传、分块状态矩阵、协议条、文件表
 vite.config.js            Vite 配置:vue full build(运行时编译内联模板)+ sm-crypto 的 crypto stub
-web/main.js               Vue 组件(页面逻辑):UI 状态、事件委托、协议条、模板辅助;传输逻辑见下方 manager
-web/upload-manager.js     上传编排:密钥协商 → 分块加密上传 → 四轮调度+对账 → Merkle 校验(经回调同步 UI)
-web/download-manager.js   下载编排:流式写盘/内存组装 → 三方完整性核对 → 逐块解密校验
-web/worker-client.js      Worker 客户端:请求-响应关联封装(发任务 → Promise 回包)
-web/scheduler.js          通用分块调度器:并发槽位 + 指数退避重试 + 暂停/取消(NonRetryable 快速失败)
-web/http.js               HTTP 基础设施:api(JSON/错误语义)、fetchWithTimeout、sleep(可中断)
-web/keystore.js           localStorage 密钥管理(get/set/remove 会话密钥 + Merkle 根)
-web/format.js             展示格式化:formatBytes/formatSpeed/formatTime/formatTimeShort/shortHex
-web/worker.js             module worker(ESM):加密/解密/SM3/Merkle 执行入口
-web/worker-core.js        Worker 纯逻辑:消息协议 + 启动 KAT 自检(可脱离浏览器测试)
-web/shared/crypto.js      全项目唯一算法封装(ESM:浏览器/Worker/Node 共用,测试复用)
+web/main.js               Vue 组件(页面逻辑):UI 状态、事件委托、协议条、模板辅助;只从请求加密库入口引入
+web/secure/               请求加密库(自包含,唯一入口 index.js;main.js 不感知内部拆分)
+web/secure/index.js       库门面 createSecureClient({callbacks}) → { fetchPubkey/listFiles/removeFile/
+                         getKey/hasKey/removeKey/startUpload/pause/resume/cancel/download };另导出 format 函数
+web/secure/upload-manager.js   上传编排:密钥协商 → 分块加密上传 → 四轮调度+对账 → Merkle 校验(经回调同步 UI)
+web/secure/download-manager.js 下载编排:流式写盘/内存组装 → 三方完整性核对 → 逐块解密校验
+web/secure/worker-client.js    Worker 客户端:请求-响应关联封装(发任务 → Promise 回包)
+web/secure/scheduler.js        通用分块调度器:并发槽位 + 指数退避重试 + 暂停/取消(NonRetryable 快速失败)
+web/secure/http.js             HTTP 基础设施:api(JSON/错误语义)、fetchWithTimeout、sleep(可中断)
+web/secure/keystore.js         localStorage 密钥管理(get/set/remove 会话密钥 + Merkle 根)
+web/secure/format.js           展示格式化:formatBytes/formatSpeed/formatTime/formatTimeShort/shortHex
+web/secure/worker.js           module worker(ESM):加密/解密/SM3/Merkle 执行入口
+web/secure/worker-core.js      Worker 纯逻辑:消息协议 + 启动 KAT 自检(可脱离浏览器测试)
+web/secure/crypto.js           全项目唯一算法封装(ESM:浏览器/Worker/Node 共用,测试复用)
 web/shims/                sm-crypto 的 require('crypto') 浏览器 stub
 public/favicon.svg        站点图标(Vite publicDir 静态资源)
 server.js                 Express 应用:API 路由 + 静态服务(开发挂 Vite middleware,生产服务 dist/)

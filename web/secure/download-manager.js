@@ -14,7 +14,7 @@
 import { fetchWithTimeout, api } from './http.js'
 import { ChunkScheduler, NonRetryable } from './scheduler.js'
 import { WorkerClient } from './worker-client.js'
-import * as SM from './shared/crypto.js'
+import * as SM from './crypto.js'
 
 export class DownloadManager {
   /**
