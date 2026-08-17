@@ -48,9 +48,10 @@ npm run smoke          # 真实浏览器(headless Chrome + CDP)全流程冒烟,�
 ## 目录结构
 
 ```
-index.html                Vite 入口:Vue 3 单页(内联模板/样式),拖拽上传、分块状态矩阵、协议条、文件表
-vite.config.js            Vite 配置:vue full build(运行时编译内联模板)+ sm-crypto 的 crypto stub
-web/main.js               Vue 组件(页面逻辑):UI 状态、事件委托、协议条、模板辅助;只从请求加密库入口引入
+index.html                Vite 入口:极简壳(仅挂载点 #app + 引导脚本),模板与样式在 App.vue
+vite.config.js            Vite 配置:@vitejs/plugin-vue(SFC 构建期编译,runtime 构建)+ sm-crypto 的 crypto stub
+web/App.vue               Vue 根组件(SFC,Options API):模板 + 全局样式 + 页面逻辑(UI 状态、事件委托、协议条、模板辅助)
+web/main.js               挂载引导:createApp(App).mount('#app');传输逻辑只经请求加密库入口引入
 web/secure/               请求加密库(自包含,唯一入口 index.js;main.js 不感知内部拆分)
 web/secure/index.js       库门面 createSecureClient({callbacks}) → { fetchPubkey/listFiles/removeFile/
                          getKey/hasKey/removeKey/startUpload/pause/resume/cancel/download };另导出 format 函数
