@@ -8,9 +8,13 @@
 import { sm2 } from 'sm-crypto'
 import * as store from './store.js'
 
-const cache = new Map() // uploadId -> SM4 key(32 hex)
+const cache = new Map() // uploadId -> SM4 key(32 hex),仅驻留内存
 
-/** 解封 SM2 封装的 SM4 会话密钥并校验长度(16 字节) */
+/**
+ * 解封 SM2 封装的 SM4 会话密钥并校验长度(16 字节)。
+ * 入口处先验 wrappedKey 的 hex 形态:SM2 密文(C1C3C2)约 96–98 字节 hex,
+ * 格式非法直接拒绝,避免把任意字符串喂进 doDecrypt 触发解析异常或放大攻击面。
+ */
 function unwrapKey(wrappedKeyHex) {
   if (typeof wrappedKeyHex !== 'string' || !/^[0-9a-f]{200,400}$/i.test(wrappedKeyHex)) {
     throw new Error('wrappedKey 格式非法')

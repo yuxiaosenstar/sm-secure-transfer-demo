@@ -24,6 +24,11 @@ function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true })
 }
 
+/**
+ * 原子写:.tmp 写入后 rename 到目标。
+ * 同一文件的并发读写方(重试覆盖中的块文件 vs complete 的结构检查)绝不会读到
+ * 半截内容 —— rename 在 POSIX 上是原子的,读者要么看到旧完整文件,要么看到新完整文件。
+ */
 function atomicWrite(file, data) {
   ensureDir(path.dirname(file))
   const tmp = `${file}.tmp`
@@ -55,6 +60,7 @@ function itemDir(scope, id) {
   return path.join(scopeDir(scope), id)
 }
 
+/** 块文件名固定 10 位零填充:字典序 == 数字序,任何按文件名的排序/范围操作都等价于按索引 */
 function chunkFileName(index) {
   return `chunk-${String(index).padStart(10, '0')}.enc`
 }

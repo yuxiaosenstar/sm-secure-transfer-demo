@@ -77,6 +77,17 @@ function shortHex(hex, n = 8) {
 
 /* ---------------- Worker 客户端(请求-响应关联) ---------------- */
 
+/**
+ * Worker 客户端:把"发任务 → 等回包"封装成 Promise。
+ *
+ * 协议是请求-响应关联的:每次 call 分配自增 id 写入消息,worker 的回传消息
+ * 必须原样带上该 id(见 worker-core.js 的协议注释),onmessage 据此把回包
+ * 路由到对应的 pending Promise。消息类型约定:
+ *   out {t:'chunk-encrypted'|'chunk-decrypted'|'merkle-root-done'} 成功
+ *   out {t:'error', message}  失败 → reject
+ * 若 worker 侧异常导致消息永远不会回来,call 的 Promise 就会永久 pending ——
+ * 这是调度器 job 超时(每块 60s)兜底的对象。
+ */
 class WorkerClient {
   constructor() {
     this.worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' })
@@ -85,11 +96,12 @@ class WorkerClient {
     this.worker.onmessage = (ev) => {
       const m = ev.data
       const p = this.pending.get(m.id)
-      if (!p) return
+      if (!p) return // 无关联请求的消息(理论上只可能是调试残留)静默丢弃
       this.pending.delete(m.id)
       m.t === 'error' ? p.reject(new Error(m.message)) : p.resolve(m)
     }
     this.worker.onerror = (ev) => {
+      // worker 崩溃/未捕获异常:让所有在途请求失败,而不是永久挂起
       for (const p of this.pending.values()) p.reject(new Error('Worker 异常: ' + ev.message))
       this.pending.clear()
     }
@@ -141,6 +153,12 @@ class ChunkScheduler {
     this.pump()
     return this.settled
   }
+  /**
+   * 状态机:任务队列(indexes)+ 在途集合(inFlight)+ 暂停/取消标志。
+   * 每个在途任务完成时(无论成败)都触发 maybeSettle + pump:maybeSettle 判断
+   * 是否全部终结(队列空且无在途),pump 则继续补充下一个任务 —— 因此并发槽位
+   * 被占满时,一个任务结束立即由下一个顶上,吞吐不因调度空转而损失。
+   */
   pump() {
     while (!this.paused && !this.cancelled && this.inFlight.size < this.concurrency && this.indexes.length) {
       const i = this.indexes.shift()
@@ -158,6 +176,12 @@ class ChunkScheduler {
       this.resolveSettled({ failed: this.failed, cancelled: this.cancelled })
     }
   }
+  /**
+   * 单个块的任务循环:成功立即返回;失败按指数退避(1s/3s/8s)重试,
+   * NonRetryable(服务端确定性拒绝,如 4xx 校验失败)不重试直接判失败。
+   * 重试复用同一 job 调用 —— 上传侧因 cipherCache 缓存同一密文而幂等,
+   * 下载侧每次重新下载,天然可重试。
+   */
   async task(i) {
     for (let attempt = 0; attempt <= this.retries; attempt++) {
       if (this.cancelled) return
@@ -185,7 +209,7 @@ class ChunkScheduler {
   resume() { this.paused = false; this.pump() }
   cancel() {
     this.cancelled = true
-    this.abort.abort()
+    this.abort.abort() // 中止所有在途 fetch(job 收到 abort 信号立即抛 AbortError)
     this.maybeSettle()
   }
 }
@@ -230,8 +254,7 @@ createApp({
       notice: null,       // 页面内联通知 { type: 'error'|'info', text }
       noticeTimer: null,
     }
-  },
-  computed: {
+  },  computed: {
     session() { return this.sessionKeyFp ? shortHex(this.sessionKeyFp) : '—' },
   },
   async mounted() {
@@ -371,6 +394,9 @@ createApp({
 
       const job = (i, signal) => this.uploadChunkJob(u, id, keyHex, i, signal, chunkHashes, cipherCache)
 
+      // 四轮调度:每轮内每块已重试 3 次,一轮结束后对账剔除服务器已落盘的块
+      // (块上传成功但响应丢失的场景 —— 服务器收到并校验通过才会落盘,所以"已
+      // 落盘"即"已成功"),只对残留块开下一轮。这是网络丢包下的最终一致性兜底。
       let pending = Array.from({ length: chunkCount }, (_, i) => i)
       for (let round = 0; round < 4; round++) {
         await this.waitWhilePaused(u)
@@ -401,6 +427,9 @@ createApp({
 
     uploadChunkJob(u, id, keyHex, i, signal, chunkHashes, cipherCache) {
       return (async () => {
+        // cipherCache 缓存块密文:重试时复用同一 IV+密文+哈希,保证对服务端幂等
+        // (服务端按"哈希+长度"校验后覆盖落盘,同内容重复写入结果一致)。
+        // 成功后即删除缓存释放内存;失败保留,供下一轮重试继续复用。
         if (!cipherCache.has(i)) cipherCache.set(i, this.worker.encryptChunk(i, keyHex))
         const { ivHex, ct, ptHashHex } = await cipherCache.get(i)
         chunkHashes[i] = ptHashHex
@@ -416,6 +445,7 @@ createApp({
         if (!res.ok) {
           const detail = await res.text().catch(() => '')
           if (res.status >= 400 && res.status < 500) {
+            // 4xx = 服务端确定性拒绝(校验失败/越界),重试结果必然相同 → 不重试
             throw new NonRetryable(`块 ${i} 被服务端拒绝(HTTP ${res.status}${detail ? ': ' + detail : ''})`)
           }
           throw new Error(`块 ${i} 传输失败(HTTP ${res.status})`)

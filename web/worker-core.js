@@ -39,7 +39,11 @@ export function createWorkerHandlers({ post }) {
     const len = Math.min(SM.CHUNK_SIZE, file.size - off)
     if (len <= 0) throw new Error('块索引越界: ' + index)
 
-    // Blob.slice 在 Worker 中可用,读取指定区间(File 的克隆共享底层存储)
+    // 注意:file 是主线程 postMessage 结构化克隆过来的,Worker 里 slice().arrayBuffer()
+    // 读取的是共享底层存储(不复制整文件字节)。读取与加密都是异步的,所以这里用
+    // promise 链而非同步 throw —— 同步 throw 只能被外层 onMessage 的 try/catch 捕获,
+    // 而异步失败必须显式走 .then 的第二个回调把 error 消息回传,否则主线程的
+    // 请求会永久挂起(主线程 pending 等待超时才报错)。
     file.slice(off, off + len).arrayBuffer().then(
       (buf) => {
         const plain = new Uint8Array(buf)

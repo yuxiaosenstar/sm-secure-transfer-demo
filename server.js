@@ -98,6 +98,9 @@ function createApp() {
   })
 
   // ---- 分块上传:body = [IV(16) | SM4 密文],头 X-Chunk-Hash = SM3(明文) ----
+  // 校验链:会话存在 → 索引合法 → 头哈希格式 → 密文长度精确(防畸形块)→ 解封
+  // 会话密钥 → SM4 解密 → SM3 比对。只有"能解出且哈希一致"的块才落盘 —— 明文
+  // 只在这条校验链上存在于内存,落盘的永远是 [IV|密文]。
   app.post(
     '/api/upload/chunk/:id/:index',
     express.raw({ type: 'application/octet-stream', limit: RAW_LIMIT }),
@@ -134,6 +137,8 @@ function createApp() {
         return bad(res, 422, `块 ${index} SM3 完整性校验失败`)
       }
 
+      // 落盘是幂等的:同一块重试(网络重传/断点续传)携带相同的 IV+密文+哈希,
+      // 覆盖写入结果一致 —— 这是调度器"重试复用同一密文"安全成立的前提。
       store.writeChunkFile('uploads', id, index, body)
       meta.perChunkHash[index] = hash
       store.writeMeta('uploads', id, meta) // 每块持久化,重启后断点续传仍成立
@@ -178,6 +183,9 @@ function createApp() {
 
     const ordered = []
     for (let i = 0; i < meta.chunkCount; i++) ordered.push(meta.perChunkHash[i])
+    // 服务端用"自己逐块验过的哈希"重算 Merkle 根,与客户端提交的根比对 ——
+    // 根是对全部块哈希的顺序敏感摘要,任何一块缺失/错序/被替换都会使根不同。
+    // 客户端/服务端/上传时 localStorage 三处根的交叉核对在下载侧完成。
     const serverRoot = shared.merkleRoot(ordered)
     if (serverRoot !== String(rootHash ?? '').toLowerCase()) {
       return bad(res, 409, '文件级完整性校验失败(Merkle 根不一致)')

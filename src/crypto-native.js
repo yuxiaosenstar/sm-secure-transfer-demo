@@ -27,7 +27,7 @@ function sm4Decrypt(keyHex, ivHex, ct) {
 /** SM3 摘要,返回 64 位小写 hex */
 function sm3Hex(buf) {
   if (HAS_NATIVE) return crypto.createHash('sm3').update(buf).digest('hex')
-  return getShared().sm3Hex(new Uint8Array(buf))
+  return shared.sm3Hex(new Uint8Array(buf)) // 回退:与浏览器端同一份纯 JS 实现
 }
 
 export { HAS_NATIVE, sm4Decrypt, sm3Hex }
