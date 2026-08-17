@@ -254,7 +254,8 @@ createApp({
       notice: null,       // 页面内联通知 { type: 'error'|'info', text }
       noticeTimer: null,
     }
-  },  computed: {
+  },
+  computed: {
     session() { return this.sessionKeyFp ? shortHex(this.sessionKeyFp) : '—' },
   },
   async mounted() {
