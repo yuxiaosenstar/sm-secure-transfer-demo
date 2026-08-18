@@ -24,7 +24,140 @@ npm test               # 算法 KAT + 互操作 + 黑盒全链路(18 个用例,�
 npm run smoke          # 真实浏览器(headless Chrome + CDP)全流程冒烟,需先启动服务
 ```
 
-## 加密设计
+## 加密设计 · 加密传输流程图
+
+> 上传与下载两套完整流程,标注了 客户端 / Worker / 服务端 三方职责与校验时机。
+> 文件结构对应真实代码:上传见 `web/secure/upload-manager.js`,下载见 `web/secure/download-manager.js`,调度见 `web/secure/scheduler.js`,服务端路由见 `server.js`。
+
+### 上传(加密上传 + 完整性校验)
+
+```mermaid
+flowchart TD
+    subgraph Client["浏览器 · Vue 组件"]
+        UI["用户选择文件<br/>(startUpload)"]
+        UI -->|"生成随机 SM4 会话密钥 keyHex"| SM2["SM2 封装会话密钥<br/>sm2WrapKey(pubKey, keyHex)"]
+        SM2 --> INIT["POST /api/upload/init<br/>{name, size, chunkSize, wrappedKey}"]
+        INIT -->|"{id, chunkCount}"| CELLS["初始化任务对象<br/>chunkCells / totalChunks"]
+    end
+
+    subgraph Worker["Web Worker"]
+        setfile["setFile(file)<br/>File 结构化克隆共享"]
+        ENC["encryptChunk(i)<br/>SM4-CBC 加密,每块独立随机 IV<br/>计算 SM3(明文)= ptHash"]
+        MERKLE["merkleRoot(chunkHashes)<br/>SM3(按序拼接各块摘要)"]
+    end
+
+    subgraph Scheduler["ChunkScheduler · 上传侧"]
+        SCHED["3 并发槽位<br/>每块重试 3 次(退避 1s/3s/8s)"]
+        PAUSE{{"暂停 / 取消?"}}
+        ROUND{{"一轮结束,仍有失败块?"}}
+        RECON["GET /api/upload/status/:id<br/>对账,剔除已落盘块"]
+    end
+
+    subgraph Server["Express 服务端"]
+        S_INIT["/api/upload/init<br/>解封会话密钥<br/>生成 upload 会话"]
+        S_CHUNK["/api/upload/chunk/:id/:i<br/>校验链:会话→索引→哈希格式→长度→解密→SM3 比对"]
+        S_STORE["落盘 [IV(16)|SM4 密文]<br/>明文永不落盘,块级幂等覆盖"]
+        S_COMPLETE["/api/upload/complete<br/>结构检查 + 用自验哈希重算 Merkle 根比对"]
+        S_MOVE["比对一致 → 转正<br/>uploads → files 目录,关闭会话"]
+    end
+
+    CELLS --> setfile
+    setfile --> SCHED
+    SCHED -->|"job(i)"| ENC
+    ENC -->|"body=[IV|ct], X-Chunk-Hash=ptHash"| S_CHUNK
+    S_CHUNK -->|"能解出且哈希一致"| S_STORE
+    S_STORE -->|"204"| SCHED
+    S_CHUNK -.->|"4xx 确定性拒绝 → NonRetryable 不重试"| SCHED
+    SCHED --> PAUSE
+    PAUSE -->|"恢复"| SCHED
+    PAUSE -->|"取消"| END_U["终止,丢弃会话"]
+    SCHED --> ROUND
+    ROUND -->|"是(<4 轮)"| RECON
+    RECON --> SCHED
+    ROUND -->|"否(4 轮仍失败 → 抛错)"| FAIL_U["上传失败"]
+    ROUND -->|"全部成功"| VERIFY["phase=verifying"]
+    VERIFY --> MERKLE
+    MERKLE -->|"rootHex"| S_COMPLETE
+    S_COMPLETE -->|"根一致"| S_MOVE
+    S_MOVE -->|"{fileId, rootHash}"| LOCALSTORE["keyStore.set: keyHex + rootHash 存 localStorage"]
+    LOCALSTORE --> DONE_U["✓ 上传完成<br/>服务端 + 客户端双侧校验通过"]
+```
+
+### 下载(解密下载 + 三方完整性核对)
+
+```mermaid
+flowchart TD
+    subgraph Client["浏览器 · Vue 组件"]
+        DL["用户点击下载<br/>(download, 需在用户手势内)"]
+        PICK{{"支持 File System Access?"}}
+        PICK -->|"是"| FSA["showSaveFilePicker 打开保存框<br/>(首个同步调用,手势限制)"]
+        PICK -->|"否(Firefox)"| MEM["内存组装 Blob parts"]
+        META["GET /api/files/:id<br/>{chunkHashes, rootHash, ...}"]
+        LOCAL["从 localStorage 读密钥记录<br/>{keyHex, rootHash}"]
+    end
+
+    subgraph Verify["下载前三方完整性核对"]
+        V_MERKLE["Worker: merkleRoot(meta.chunkHashes)"]
+        V_SERVER{{"根 === meta.rootHash?<br/>服务器记录与逐块摘要一致?"}}
+        V_LOCAL{{"根 === 本地记录 rootHash?<br/>内容与上传时一致?"}}
+        V_MERKLE --> V_SERVER
+        V_SERVER -->|"否"| FAIL1["抛错:服务器完整性记录异常"]
+        V_SERVER -->|"是"| V_LOCAL
+        V_LOCAL -->|"否"| FAIL2["抛错:文件已被篡改"]
+        V_LOCAL -->|"是"| GO["开始分块下载"]
+    end
+
+    subgraph Scheduler["ChunkScheduler · 下载侧"]
+        DSCHED["流式写盘:1 并发(须按序)<br/>内存组装:4 并发"]
+        DRETRY["每块重试 3 次(退避)<br/>SM3 校验失败 = NonRetryable"]
+    end
+
+    subgraph Server["Express 服务端"]
+        S_DL["/api/download/:id/chunk/:i<br/>(completed 门禁)<br/>直接下发 [IV|密文]"]
+    end
+
+    subgraph Worker["Web Worker"]
+        DEC["decryptChunk(i)<br/>SM4-CBC 解密 + SM3(明文)重算"]
+        DCMP{{"ptHash === meta.chunkHashes[i]?<br/>逐块防篡改"}}
+    end
+
+    DL --> PICK
+    PICK --> FSA
+    FSA --> META
+    META --> LOCAL
+    LOCAL --> V_MERKLE
+    GO --> DSCHED
+    DSCHED -->|"job(i)"| S_DL
+    S_DL -->|"密文块"| DEC
+    DEC --> DCMP
+    DCMP -->|"否 → NonRetryable"| FAIL3["抛错:块内容已被篡改"]
+    DCMP -->|"是"| WRITE{"流式写盘?"}
+    WRITE -->|"是"| WFS["writable.write(plain)<br/>按序落盘,内存 O(1)"]
+    WRITE -->|"否"| PARTS["parts[i] = plain"]
+    WFS --> ALL{{"全部块完成?"}}
+    PARTS --> ALL
+    ALL -->|"否"| DSCHED
+    ALL -->|"是"| CLOSE["流式: writable.close()<br/>内存: Blob → a.click() 保存"]
+    CLOSE --> DONE_D["✓ 已保存并校验通过"]
+```
+
+### 关键校验点一览
+
+| # | 阶段 | 校验 | 失败后果 |
+|---|---|---|---|
+| 1 | 上传逐块 | 服务端解封密钥 → SM4 解密 → SM3(明文) 比对 `X-Chunk-Hash` | 422 拒绝,`NonRetryable` 不重试 |
+| 2 | 上传转正 | 服务端用自验的逐块哈希重算 Merkle 根,与客户端提交比对 | 409,不转正 |
+| 3 | 下载前 | Worker 用服务器返回的 chunkHashes 重算 Merkle 根,与服务器 rootHash **及** localStorage 三方交叉核对 | 抛错,拒绝下载 |
+| 4 | 下载逐块 | Worker 解密后重算 SM3,与 `meta.chunkHashes[i]` 比对 | `NonRetryable`,下载失败 |
+
+## 其他要点
+
+- **明文永不落盘**:服务端只存 `[IV(16) | SM4 密文]`;SM4 会话密钥只在内存中解封用于校验,落盘 meta 里只有 SM2 封装形态。
+- **上传幂等**:每块加密结果缓存(`cipherCache`),重试复用同一 IV + 密文 + 哈希,服务端覆盖写结果一致 —— 网络丢包/断点续传安全。
+- **四轮调度兜底**:块上传成功但响应丢失时,一轮结束后 `GET /status` 对账剔除已落盘块,只补传残留(见上传图 RECON)。
+- **断点续传**:服务器每块原子持久化 meta;恢复上传先对账,跳过已落盘块。
+- **手势限制**:`showSaveFilePicker` 必须是下载函数首个同步调用(浏览器要求在用户手势内打开保存框)。
+- **密钥本地化**:SM4 密钥只存本浏览器 localStorage(`sm-vault-keys`),换浏览器/清除站点数据即无法解密。
 
 ### 信任模型:加密传输 + 密文落盘 + 服务端可验
 
@@ -75,6 +208,7 @@ scripts/browser-smoke.mjs headless Chrome + CDP 全流程冒烟
 test/crypto.test.mjs      算法 KAT + sm-crypto 与 Node 原生互操作(字节级一致)
 test/worker.test.mjs      Worker 核心协议(直接驱动 worker-core,无需构建产物)
 test/e2e.mjs              黑盒全链路:往返/边界/篡改/续传/负面用例
+docs/encryption-flow.md   上传/下载加密请求流程图(Mermaid:密钥协商、分块加密、完整性校验时机)
 ```
 
 ## API
